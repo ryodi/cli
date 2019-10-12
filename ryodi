@@ -1,0 +1,73 @@
+#!/usr/bin/perl
+
+#
+# Copyright (c) 2019 James Hunt
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+
+use strict;
+use warnings;
+
+use constant MAJOR_VERSION => 1;
+use constant MINOR_VERSION => 0;
+
+#
+# ryodi help
+# ryodi version
+# ryodi up <role> [as <name>]
+# ryodi down <name>
+#
+
+my $command = lc(shift @ARGV || 'help');
+
+if ($command eq 'help' || $command eq '-h' || $command eq '-?' || $command eq '--help') {
+	banner();
+	printf "RYODI v%d\n\nThis is `ryodi', the command-line interface for running your own infrastructure.\n\n", MAJOR_VERSION;
+	printf <<EOF;
+This program does what it does using sub-commands, like `ryodi help',
+and `ryodi up'.  To see what commands you can try out, run:
+
+    ryodi commands
+
+Here's the most popular ones:
+
+    ryodi version      Print version information.
+
+    ryodi up           Spin up a component of your infrastructure.
+    ryodi down         Shut down part of your infrastructure.
+    ryodi bounce       Restart part of your infrastructure.
+
+If you're stuck, head on over to https://ryodi.com/start
+and read through the RYODI Orientation Guide!
+EOF
+	exit 0;
+}
+if ($command eq 'version') {
+	printf "ryodi/%d version %d.%d\n", MAJOR_VERSION, MAJOR_VERSION, MINOR_VERSION;
+	exit 0;
+}
+
+##############
+
+sub banner {
+	print <<EOF
+
+  #######    ## ##    ########  #####   ##
+ ##     ##   ## ##   ##  ##  ## ## ##  ##
+ ## ### ## ######### ##  ##     ##### ##
+ ## ### ##   ## ##    ########       ##
+ ## #####  #########     ##  ##     ## #####
+ ##          ## ##   ##  ##  ##    ##  ## ##
+  #######    ## ##    ########    ##   #####
+
+EOF
+}
