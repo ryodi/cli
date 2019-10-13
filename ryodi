@@ -20,6 +20,7 @@ use warnings;
 use constant MAJOR_VERSION => 1;
 use constant MINOR_VERSION => 0;
 
+use POSIX;
 use JSON::PP qw(decode_json);
 use File::Path qw(mkpath);
 use File::Basename qw(dirname);
@@ -34,6 +35,8 @@ sub version {
 # ryodi up <role> [as <name>]
 # ryodi down <name>
 #
+
+my $DOMAIN = "ryodi.com"; # FIXME
 
 my $command = lc(shift @ARGV || 'help');
 
@@ -133,25 +136,43 @@ if ($command eq 'up') {
 	my $name = $component;
 
 	if ($component eq 'control-plane') {
-		for (qw(router certwatch)) {
+		for (qw(router certwatch vault)) {
 			docker('stop "%s-%s" >/dev/null 2>&1', $name, $_);
 			docker('rm   "%s-%s" >/dev/null 2>&1', $name, $_);
 		}
 		docker('network create public >/dev/null 2>&1');
+
+		putfile("$DATAROOT/$component/vault/config.json", <<EOF);
+{
+  "backend": {
+    "file": {
+      "path": "/vault/file"
+    }
+  },
+  "listener": {
+    "tcp": {
+      "address": "0.0.0.0:8200",
+      "tls_disable": 1
+    }
+  },
+  "default_lease_ttl": "168h",
+  "max_lease_ttl": "720h"
+}
+EOF
 
 		putfile("$DATAROOT/$component/traefik.toml", <<EOF);
 defaultEntryPoints = ["http", "https"]
 
 [entryPoints]
   [entryPoints.http]
-    address = ":80"
+    address = ":8080"
 
   [entryPoints.https]
-    address = ":443"
+    address = ":8443"
     [entryPoints.https.tls]
 
   [entryPoints.admin]
-    address = ":81"
+    address = ":8081"
     [entryPoints.admin.auth]
       [entryPoints.admin.auth.basic]
         removeHeader = true
@@ -183,13 +204,15 @@ EOF
 
 		docker({
 			run => [qw[traefik -d --docker]],
+			'--user'    => getuid(),
 			'-d'        => undef,
 			'--name'    => "$name-router",
 			'--restart' => 'always',
 			'--network' => 'public',
 			ports => [
-				'8180:80',
-				'8181:81',
+				'8180:8080',
+				'8181:8081',
+				'8443:8443',
 			],
 			volumes => [
 				"$DATAROOT/$component/traefik.toml:/etc/traefik/traefik.toml",
@@ -206,6 +229,7 @@ EOF
 
 		docker({
 			run => [qw[ryodi/traefik-cert-dumper watch]],
+			'--user'    => getuid(),
 			'-d'        => undef,
 			'--name'    => "$name-certwatch",
 			'--restart' => 'always',
@@ -221,6 +245,31 @@ EOF
 			),
 		});
 
+		docker({
+			run => [qw[ryodi/vault vault server -config /vault/config.json]],
+			'--user'    => getuid(),
+			'-d'        => undef,
+			'--name'    => "$name-vault",
+			'--restart' => 'always',
+			'--network' => 'public',
+			'--cap-add' => 'IPC_LOCK',
+			ports => [
+				'8201:8200',
+			],
+			volumes => [
+				"$DATAROOT/$component/vault:/vault",
+			],
+			labels => labels(
+				component => $component,
+				role      => 'vault',
+				alias     => $name,
+				version   => version(),
+
+				'traefik.frontend.rule'  => "Host:vault.$DOMAIN",
+				'traefik.docker.network' => "public",
+			),
+		});
+
 		exit 0;
 	}
 
@@ -233,7 +282,8 @@ if ($command eq 'down') {
 		exit 1;
 	}
 
-	for (docker({ ps => ['com.ryodi.component=control-plane'] })) {
+	my $component = shift @ARGV;
+	for (docker({ ps => ["com.ryodi.component=$component"] })) {
 		print "found [$_]\n";
 		docker('stop %s', $_);
 	}
@@ -299,7 +349,7 @@ sub interleave1 {
 
 sub labels {
 	my %l = @_;
-	return [map { "com.ryodi.$_=$l{$_}"; } keys %l];
+	return [map { (m/\./ ? $_ : "com.ryodi.$_") . "=$l{$_}"; } keys %l];
 }
 
 sub docker {
@@ -323,6 +373,12 @@ sub docker {
 				if (defined $_[0]{$arg}) {
 					push @opts, $_[0]{$arg};
 				}
+				next;
+			}
+
+			if ($arg eq 'env') {
+				my %e = %{$_[0]{$arg}};
+				push @opts, interleave1(-e => [map { "$_=$e{$_}" } sort keys %{$_[0]{$arg}}]);
 				next;
 			}
 
