@@ -582,6 +582,23 @@ sub docker {
 	}
 }
 
+sub fromvault {
+	my ($path) = @_;
+
+	if (! -f "$DATAROOT/control-plane/saferc") {
+		print STDERR "Unable to retrieve $path from the vault!\n";
+		print STDERR "Did you properly spin up a control-plane first?\n\n";
+		print STDERR "If not:\n\n    ryodi up control-plane\n\n";
+		exit 2;
+	}
+
+	chomp(my $out = `docker run -it -v $DATAROOT/control-plane/saferc:/home/.saferc --rm ryodi/safe read $path 2>&1 | head -n1`);
+	if ($? == 0) { return $out; }
+
+	printf STDERR "Unable to retrieve '$path' from the vault.\n";
+	exit 2;
+}
+
 sub table {
 	my (@rows, $prefix);
 	$prefix = shift @_ if @_ == 2;
@@ -641,8 +658,7 @@ sub needenv {
 sub resolvenv {
 	for my $var (keys %ENV) {
 		if ($ENV{$var} =~ m/^\@vault:(.*)$/) {
-			print "var '$var' comes from the vault at $1\n";
-			$ENV{$var} = 'secret';
+			$ENV{$var} = fromvault($1);
 		}
 	}
 }
