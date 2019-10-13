@@ -20,6 +20,14 @@ use warnings;
 use constant MAJOR_VERSION => 1;
 use constant MINOR_VERSION => 0;
 
+use JSON::PP qw(decode_json);
+use File::Path qw(mkpath);
+use File::Basename qw(dirname);
+
+sub version {
+	return sprintf("%d.%d", MAJOR_VERSION, MINOR_VERSION);
+}
+
 #
 # ryodi help
 # ryodi version
@@ -45,6 +53,7 @@ Here's the most popular ones:
     ryodi up           Spin up a component of your infrastructure.
     ryodi down         Shut down part of your infrastructure.
     ryodi bounce       Restart part of your infrastructure.
+    ryodi list         Show what components are running.
 
 If you're stuck, head on over to https://ryodi.com/start
 and read through the RYODI Orientation Guide!
@@ -52,9 +61,215 @@ EOF
 	exit 0;
 }
 if ($command eq 'version') {
-	printf "ryodi/%d version %d.%d\n", MAJOR_VERSION, MAJOR_VERSION, MINOR_VERSION;
+	printf "ryodi/%d version %s\n", MAJOR_VERSION, version();
 	exit 0;
 }
+if ($command eq 'commands') {
+	banner();
+	printf "Full list of commands in this version of RYODI (v%s):\n\n", version();
+	my @commands = (
+		{ command => 'version', help => <<EOF, },
+Prints the version of RYODI implemented by this command-line interface.
+EOF
+		{ command => 'help', help => <<EOF, },
+Displays a helpful message listing the most common RYODI commands, and what they do.
+EOF
+		{ command => 'up', help => <<EOF, },
+Launches a new component of your infrastructure.
+EOF
+	);
+
+	# calculate width of the first column
+	my $col = 0;
+	for (@commands) {
+		my $l = length($_->{command});
+		if ($l > $col) { $col = $l; }
+	}
+	# pad 4 spaces before, 4 spaces after
+
+	my $width = 66;
+	my $rest = $width - 4 - $col - 4;
+	my $pad = ' ' x $col;
+
+	for (@commands) {
+		my @lines = ();
+		for my $p (split /\n\n+/, $_->{help}) {
+			my $line = '';
+			for my $w (split /\s+/, $p) {
+				if ($line eq '') { # minimum one word per line
+					$line = $w;
+				} elsif (length($line) + 1 + length($w) > $rest) {
+					push @lines, $line;
+					$line = $w;
+				} else {
+					$line .= " $w";
+				}
+			}
+			if ($line ne '') {
+				push @lines, $line;
+			}
+			push @lines, ''; # blank separator
+		}
+		my $line = shift @lines;
+		printf "    %-${col}s    %s\n", $_->{command}, $line;
+		for $line (@lines) {
+			if ($line eq '') {
+				print "\n";
+			} else {
+				printf "    $pad    %s\n", $line;
+			}
+		}
+	}
+	exit 0;
+}
+if ($command eq 'up') {
+	if (@ARGV == 0) {
+		printf STDERR "Usage: $0 $command COMPONENT [as NAME]\n";
+		exit 1;
+	}
+
+	my $DATAROOT="$ENV{HOME}/.ryodi"; # FIXME
+	my $component = $ARGV[0];
+	my $name = $component;
+
+	if ($component eq 'control-plane') {
+		for (qw(router certwatch)) {
+			docker('stop "%s-%s" >/dev/null 2>&1', $name, $_);
+			docker('rm   "%s-%s" >/dev/null 2>&1', $name, $_);
+		}
+		docker('network create public >/dev/null 2>&1');
+
+		putfile("$DATAROOT/$component/traefik.toml", <<EOF);
+defaultEntryPoints = ["http", "https"]
+
+[entryPoints]
+  [entryPoints.http]
+    address = ":80"
+
+  [entryPoints.https]
+    address = ":443"
+    [entryPoints.https.tls]
+
+  [entryPoints.admin]
+    address = ":81"
+    [entryPoints.admin.auth]
+      [entryPoints.admin.auth.basic]
+        removeHeader = true
+        users = [
+          "jhunt:\$apr1\$Uliz7jDQ\$.7ww73BdZbOgP4sOieTXU."
+        ]
+
+[ping]
+  entryPoint = "admin"
+
+[api]
+  entryPoint = "admin"
+  dashboard = true
+
+[docker]
+  domain = "ryodi.com"
+  watch = true
+  network = "public"
+
+[acme]
+  email = "james\@ryodi.com"
+  storage = "/acme/acme.json"
+  entryPoint = "https"
+  onHostRule = true
+
+  [acme.httpChallenge]
+    entryPoint = "http"
+EOF
+
+		docker({
+			run => [qw[traefik -d --docker]],
+			'-d'        => undef,
+			'--name'    => "$name-router",
+			'--restart' => 'always',
+			'--network' => 'public',
+			ports => [
+				'8180:80',
+				'8181:81',
+			],
+			volumes => [
+				"$DATAROOT/$component/traefik.toml:/etc/traefik/traefik.toml",
+				"$DATAROOT/$component/acme:/acme",
+				"/var/run/docker.sock:/var/run/docker.sock"
+			],
+			labels => labels(
+				component => $component,
+				role      => 'router',
+				alias     => $name,
+				version   => version(),
+			),
+		});
+
+		docker({
+			run => [qw[ryodi/traefik-cert-dumper watch]],
+			'-d'        => undef,
+			'--name'    => "$name-certwatch",
+			'--restart' => 'always',
+			volumes => [
+				"$DATAROOT/$component/acme:/acme",
+				"$DATAROOT/_certs:/dump",
+			],
+			labels => labels(
+				component => $component,
+				role      => 'certwatch',
+				alias     => $name,
+				version   => version(),
+			),
+		});
+
+		exit 0;
+	}
+
+	printf STDERR "Unrecognized ryodi component '$component'!\n";
+	exit 2;
+}
+if ($command eq 'down') {
+	if (@ARGV == 0) {
+		printf STDERR "Usage: $0 $command NAME\n";
+		exit 1;
+	}
+
+	for (docker({ ps => ['com.ryodi.component=control-plane'] })) {
+		print "found [$_]\n";
+		docker('stop %s', $_);
+	}
+
+	exit 0;
+}
+
+if ($command eq 'ls' || $command eq 'list') {
+	my %map;
+	for my $id (docker({ ps => ['com.ryodi.component'] })) {
+		my $info = docker({ inspect => $id });
+		my $component = $info->{Config}{Labels}{'com.ryodi.component'};
+		my $role      = $info->{Config}{Labels}{'com.ryodi.role'} || '';
+		$map{$component}{$role} = $info;
+	}
+
+	for my $component (sort keys %map) {
+		print "$component ::\n";
+		my @rows;
+		for my $role (sort keys %{ $map{$component} }) {
+			my $c = $map{$component}{$role};
+			push @rows, [$c->{Name}, "[$role]", "$c->{State}{Status}"];
+		}
+		table("  ", \@rows);
+	}
+
+	#use Data::Dumper; print Dumper(\%map);
+	exit 0;
+}
+
+printf STDERR <<EOF;
+ryodi: command '$command' not recognized.
+
+You might want to try `ryodi help' or `ryodi commands'"
+EOF
+exit 1;
 
 ##############
 
@@ -70,4 +285,125 @@ sub banner {
   #######    ## ##    ########    ##   #####
 
 EOF
+}
+
+sub interleave1 {
+	my ($one, $list) = @_;
+	my @l;
+	for (@$list) {
+		push @l, $one;
+		push @l, $_;
+	}
+	return @l;
+}
+
+sub labels {
+	my %l = @_;
+	return [map { "com.ryodi.$_=$l{$_}"; } keys %l];
+}
+
+sub docker {
+	if (@_ && !ref($_[0])) {
+		# i.e. docker("network create %s >/dev/null 2>&1", $net);
+		my $fmt = shift @_;
+		my $cmd = sprintf($fmt, @_);
+		printf STDERR "exec> docker $cmd\n";
+		system("docker $cmd");
+		return;
+	}
+
+	if (@_ && $_[0]{run}) {
+		# i.e. docker({ run => ['image', '--args'], %options });
+
+		my @opts = qw(run);
+		for my $arg (keys %{$_[0]}) {
+			next if $arg eq 'run';
+			if ($arg =~ m/^-/) {
+				push @opts, $arg;
+				if (defined $_[0]{$arg}) {
+					push @opts, $_[0]{$arg};
+				}
+				next;
+			}
+
+			if ($arg eq 'ports') {
+				push @opts, interleave1(-p => $_[0]{$arg});
+				next;
+			}
+
+			if ($arg eq 'volumes') {
+				push @opts, interleave1(-v => $_[0]{$arg});
+				next;
+			}
+
+			if ($arg eq 'labels') {
+				push @opts, interleave1('--label' => $_[0]{$arg});
+				next;
+			}
+		}
+
+		push @opts, @{$_[0]{run}};
+		printf STDERR "exec> docker %s\n", join(' ', @opts);
+		system(docker => @opts);
+		return;
+	}
+
+	if (@_ && $_[0]{ps}) {
+		my @opts = qw(ps --no-trunc --format {{.ID}});
+		push @opts, interleave1('--filter', [map { "label=$_" } @{$_[0]{ps}}]);
+		printf STDERR "exec> docker %s\n", join(' ', @opts);
+
+		open my $fh, "-|", docker => @opts
+			or return;
+		my @ids;
+		while (<$fh>) { chomp; push @ids, $_; }
+		close $fh;
+
+		return wantarray ? @ids : \@ids;
+	}
+
+	if (@_ && $_[0]{inspect}) {
+		my @opts = qw(inspect);
+		push @opts, $_[0]{inspect};
+		push @opts, '--format', '{{json .}}';
+
+		open my $fh, "-|", docker => @opts
+			or return;
+		my $info = decode_json(do { local $/; <$fh> });
+		close $fh;
+
+		return $info;
+	}
+}
+
+sub table {
+	my (@rows, $prefix);
+	$prefix = shift @_ if @_ == 2;
+	@rows = @{$_[0]};
+
+	my @w;
+	for my $row (@rows) {
+		for (my $i = 0; $i < @$row; $i++) {
+			$w[$i] = length($row->[$i]) if ! defined $w[$i] || length($row->[$i]) > $w[$i];
+		}
+	}
+
+	for my $row (@rows) {
+		printf $prefix if $prefix;
+		for (my $i = 0; $i < @$row; $i++) {
+			my $l = $w[$i];
+			printf "%s%-${l}s", ($i == 0 ? '' : '  '), $row->[$i];
+		}
+		printf "\n";
+	}
+}
+
+sub putfile {
+	my ($path, $contents) = @_;
+	mkpath(dirname($path));
+
+	open my $fh, ">", $path
+		or die "$path: $!\n";
+	print $fh $contents;
+	close $fh;
 }
