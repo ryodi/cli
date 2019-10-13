@@ -253,6 +253,9 @@ EOF
 			'--restart' => 'always',
 			'--network' => 'public',
 			'--cap-add' => 'IPC_LOCK',
+			env => {
+				VAULT_API_ADDR => 'http://127.0.0.1:8200',
+			},
 			ports => [
 				'8201:8200',
 			],
