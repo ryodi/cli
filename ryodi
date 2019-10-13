@@ -19,8 +19,8 @@ use warnings;
 
 use constant MAJOR_VERSION => 1;
 use constant MINOR_VERSION => 0;
+use constant DOCKER_SOCKER => '/var/run/docker.sock';
 
-use POSIX;
 use JSON::PP qw(decode_json);
 use File::Path qw(mkpath);
 use File::Basename qw(dirname);
@@ -204,7 +204,7 @@ EOF
 
 		docker({
 			run => [qw[traefik -d --docker]],
-			'--user'    => getuid(),
+			'--user'    => runas('docker'),
 			'-d'        => undef,
 			'--name'    => "$name-router",
 			'--restart' => 'always',
@@ -229,7 +229,7 @@ EOF
 
 		docker({
 			run => [qw[ryodi/traefik-cert-dumper watch]],
-			'--user'    => getuid(),
+			'--user'    => runas(),
 			'-d'        => undef,
 			'--name'    => "$name-certwatch",
 			'--restart' => 'always',
@@ -247,7 +247,7 @@ EOF
 
 		docker({
 			run => [qw[ryodi/vault vault server -config /vault/config.json]],
-			'--user'    => getuid(),
+			'--user'    => runas(),
 			'-d'        => undef,
 			'--name'    => "$name-vault",
 			'--restart' => 'always',
@@ -462,4 +462,14 @@ sub putfile {
 		or die "$path: $!\n";
 	print $fh $contents;
 	close $fh;
+}
+
+sub runas {
+	if (@_ && $_[0] eq 'docker') {
+		my (undef, undef, undef, undef, undef, $gid) = stat(DOCKER_SOCKER);
+		return "$<:$gid";
+	}
+
+	my $gid = $); $gid =~ s/ .*//;
+	return "$<:$gid";
 }
