@@ -427,6 +427,43 @@ if ($command eq 'registry') {
 	exit 1;
 }
 
+if ($command eq 'vault') {
+	$command = shift @ARGV || 'help';
+
+	if ($command eq 'help' || $command eq '-h' || $command eq '-?' || $command eq '--help') {
+		banner();
+		# FIXME: write help
+		exit 0;
+	}
+
+	my @vault;
+	if ($command eq 'target') {
+		@vault = (qw(target ryodi), "https://vault.$DOMAIN");
+
+	} elsif ($command eq 'init') {
+		@vault = qw(init --single);
+
+	} elsif ($command eq 'status') {
+		@vault = qw(vault status);
+
+	} elsif ($command =~ m/^(seal|unseal)$/) {
+		@vault = (qw(vault operator), $command);
+
+	} else {
+		@vault = ($command, @ARGV);
+	}
+
+	initfile("$DATAROOT/control-plane/saferc", "--- {}");
+	docker({ run => ['ryodi/safe', @vault],
+		-it => undef,
+		volumes => [
+			"$DATAROOT/control-plane/saferc:/home/.saferc",
+		],
+	});
+
+	exit 0;
+}
+
 printf STDERR <<EOF;
 ryodi: command '$command' not recognized.
 
