@@ -273,6 +273,114 @@ EOF
 		exit 0;
 	}
 
+	if ($component eq 'concourse') {
+		docker('network create public    >/dev/null 2>&1');
+		docker('network create concourse >/dev/null 2>&1');
+
+		my $pgpass = vaultgen(password => 32, at => "secret/$component/postgres:password");
+
+		mkpath("$DATAROOT/$component/db/pgdata");
+		mkpath("$DATAROOT/$component/keys/web");
+		mkpath("$DATAROOT/$component/keys/worker");
+
+		docker({
+			run       => [qw[ concourse/concourse generate-key -t rsa -f /keys/session_signing_key ]],
+			ephemeral => 'yes',
+			'--user'  => runas(),
+			volumes   => ["$DATAROOT/$component/keys/web:/keys"]
+		});
+		docker({
+			run       => [qw[ concourse/concourse generate-key -t ssh -f /keys/tsa_host_key ]],
+			ephemeral => 'yes',
+			'--user'  => runas(),
+			volumes   => ["$DATAROOT/$component/keys/web:/keys"]
+		});
+		docker({
+			run       => [qw[ concourse/concourse generate-key -t ssh -f /keys/worker_key ]],
+			ephemeral => 'yes',
+			'--user'  => runas(),
+			volumes   => ["$DATAROOT/$component/keys/worker:/keys"]
+		});
+
+		`cp -v $DATAROOT/$component/keys/worker/worker_key.pub $DATAROOT/$component/keys/web/authorized_worker_keys`;
+		`cp -v $DATAROOT/$component/keys/web/tsa_host_key.pub  $DATAROOT/$component/keys/worker`;
+
+		docker({
+			wait => 'yes',
+			run  => [qw[postgres]],
+			'--user'          => runas(),
+			'--name'          => "$name-db",
+			'--network-alias' => 'db',
+			'--network'       => 'concourse',
+			env => {
+				POSTGRES_DB       => 'concourse',
+				POSTGRES_USER     => 'concourse',
+				POSTGRES_PASSWORD => $pgpass,
+			},
+			volumes => [
+				"$DATAROOT/$component/db/pgdata:/var/lib/postgresql/data",
+			],
+			labels => labels(
+				component => $component,
+				role      => 'db',
+				alias     => $name,
+				version   => version(),
+			),
+		});
+		docker({
+			wait => 'yes',
+			run  => [qw[concourse/concourse web]],
+			'--user'    => runas(),
+			'--name'    => "$name-web",
+			'--network' => 'concourse',
+			env => {
+				CONCOURSE_EXTERNAL_URL         => "https://pipes.$DOMAIN",
+				CONCOURSE_POSTGRES_HOST        => 'db',
+				CONCOURSE_POSTGRES_USER        => 'concourse',
+				CONCOURSE_POSTGRES_DATABASE    => 'concourse',
+				CONCOURSE_POSTGRES_PASSWORD    => $pgpass,
+				CONCOURSE_ADD_LOCAL_USER       => 'admin:password',
+				CONCOURSE_MAIN_TEAM_LOCAL_USER => 'admin',
+			},
+			volumes => [
+				"$DATAROOT/$component/keys/web:/concourse-keys",
+			],
+			labels => labels(
+				component => $component,
+				role      => 'web',
+				alias     => $name,
+				version   => version(),
+
+				'traefik.frontend.rule'  => "Host:pipes.$DOMAIN",
+				'traefik.docker.network' => "public",
+				'traefik.port'           => '8080',
+			),
+		});
+		docker('network connect public %s-web', $name);
+
+		docker({
+			run => [qw[concourse/concourse worker]],
+			'--name'        => "$name-worker",
+			'--privileged'  => undef,
+			'--network'     => 'concourse',
+			'--stop-signal' => 'SIGUSR2',
+			env => {
+				CONCOURSE_TSA_HOST => "$name-web:2222",
+			},
+			volumes => [
+				"$DATAROOT/$component/keys/worker:/concourse-keys",
+			],
+			labels => labels(
+				component => $component,
+				role      => 'worker',
+				alias     => $name,
+				version   => version(),
+			),
+		});
+
+		exit 0;
+	}
+
 	if ($component eq 'registry') {
 		needenv(qw[S3_ACCESS_KEY
 		           S3_SECRET_KEY
@@ -577,18 +685,41 @@ sub docker {
 	}
 }
 
-sub fromvault {
-	my ($path) = @_;
-
+sub safe {
 	if (! -f "$DATAROOT/control-plane/saferc") {
-		print STDERR "Unable to retrieve $path from the vault!\n";
+		print STDERR "Unable to interact with the vault!\n";
 		print STDERR "Did you properly spin up a control-plane first?\n\n";
 		print STDERR "If not:\n\n    ryodi up control-plane\n\n";
 		exit 2;
 	}
 
-	chomp(my $out = `docker run -it -v $DATAROOT/control-plane/saferc:/home/.saferc --rm ryodi/safe read $path 2>&1 | head -n1`);
-	if ($? == 0) { return $out; }
+	my $rest = join(' ', @_);
+	my $out = `docker run -it -v $DATAROOT/control-plane/saferc:/home/.saferc --rm ryodi/safe $rest`;
+	$out =~ s/\s*$//;
+	return $?, $out;
+}
+
+sub vaultgen {
+	my %opts = @_;
+
+	if ($opts{password}) {
+		my ($rc, $memo) = safe("read $opts{at} | head -n1");
+		if ($rc == 0 && $memo ne '') { return $memo; }
+
+		safe("gen -p a-zA-Z0-9 -l $opts{password} $opts{at}");
+		return fromvault($opts{at});
+
+	} else {
+		printf STDERR "Unhandled credentials generation request!\n";
+		exit 3;
+	}
+}
+
+sub fromvault {
+	my ($path) = @_;
+
+	my ($rc, $secret) = safe("read $path 2>&1 | head -n1");
+	if ($rc == 0) { return $secret; }
 
 	printf STDERR "Unable to retrieve '$path' from the vault.\n";
 	exit 2;
