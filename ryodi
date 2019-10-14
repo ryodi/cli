@@ -384,6 +384,43 @@ EOF
 		exit 0;
 	}
 
+	if ($component eq 'verse') {
+		needenv(qw[SITE_DOMAIN
+		           GIT_REPO_URL]);
+
+		resolvenv();
+
+		mkpath("$DATAROOT/$component/$ENV{SITE_DOMAIN}/htdocs");
+		docker({ run => [qw[huntprod/verse /bin/sh -c], "git clone $ENV{GIT_REPO_URL} /tmp/build; cd /tmp/build; make; cp -a /tmp/build/htdocs/* /out"],
+			ephemeral => 'yes',
+			'-it'     => undef,
+			volumes   => [
+				"$DATAROOT/$component/$ENV{SITE_DOMAIN}/htdocs:/out",
+			]
+		});
+
+		my $aliases = ($ENV{ALIAS_DOMAINS} ? ",$ENV{ALIAS_DOMAINS}" : "");
+		docker({ run => [qw[nginx]],
+			'--name'    => "$component-$ENV{SITE_DOMAIN}",
+			'--network' => 'public',
+			volumes => [
+				"$DATAROOT/$component/$ENV{SITE_DOMAIN}/htdocs:/usr/share/nginx/html",
+			],
+			labels => labels(
+				component => $component,
+				alias     => $name,
+				site      => $ENV{SITE_DOMAIN},
+				upstream  => $ENV{GIT_REPO_URL},
+				version   => version(),
+
+				'traefik.frontend.rule'  => "Host:$ENV{SITE_DOMAIN}$aliases",
+				'traefik.docker.network' => "public",
+			),
+		});
+
+		exit 0;
+	}
+
 	if ($component eq 'registry') {
 		needenv(qw[S3_ACCESS_KEY
 		           S3_SECRET_KEY
@@ -445,7 +482,16 @@ if ($command eq 'down') {
 	}
 
 	my $component = shift @ARGV;
-	for (docker({ ps => ["com.ryodi.component=$component"] })) {
+
+	my @also;
+	if ($component eq 'verse') {
+		needenv(qw[SITE_DOMAIN]);
+		resolvenv();
+
+		push @also, "com.ryodi.site=$ENV{SITE_DOMAIN}";
+	}
+
+	for (docker({ ps => ["com.ryodi.component=$component", @also] })) {
 		print "found [$_]\n";
 		docker('stop %s', $_);
 	}
