@@ -643,8 +643,7 @@ sub docker {
 		my $fmt = shift @_;
 		my $cmd = sprintf($fmt, @_);
 		printf STDERR "exec> docker $cmd\n";
-		system("docker $cmd");
-		return;
+		return system("docker $cmd") >> 8;
 	}
 
 	if (@_ && $_[0]{run}) {
@@ -701,8 +700,7 @@ sub docker {
 
 		push @opts, @{$_[0]{run}};
 		printf STDERR "exec> docker %s\n", join(' ', @opts);
-		system(docker => @opts);
-		return;
+		return system(docker => @opts) >> 8;
 	}
 
 	if (@_ && $_[0]{ps}) {
@@ -743,18 +741,19 @@ sub safe {
 
 	my $rest = join(' ', @_);
 	my $out = `docker run -it -v $DATAROOT/control-plane/saferc:/home/.saferc --rm ryodi/safe $rest`;
-	$out =~ s/\s*$//;
-	return $?, $out;
+	my $rc = $?; $out =~ s/\s*$//;
+	print "(exited $rc)\n";
+	return $rc, $out;
 }
 
 sub vaultgen {
 	my %opts = @_;
 
 	if ($opts{password}) {
-		my ($rc, $memo) = safe("read $opts{at} | head -n1");
-		if ($rc == 0 && $memo ne '') { return $memo; }
-
-		safe("gen -p a-zA-Z0-9 -l $opts{password} $opts{at}");
+		my ($rc, undef) = safe("check $opts{at}");
+		if ($rc != 0) {
+			safe("gen -p a-zA-Z0-9 -l $opts{password} $opts{at}");
+		}
 		return fromvault($opts{at});
 
 	} else {
