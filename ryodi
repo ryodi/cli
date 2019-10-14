@@ -590,14 +590,13 @@ if ($command eq 'vault') {
 	}
 
 	initfile("$DATAROOT/control-plane/saferc", "--- {}");
-	docker({ run => ['ryodi/safe', @vault],
-		-it => undef,
+	exit docker({ run => ['ryodi/safe', @vault],
+		ephemeral => 'yes',
+		-it       => undef,
 		volumes => [
 			"$DATAROOT/control-plane/saferc:/home/.saferc",
 		],
 	});
-
-	exit 0;
 }
 
 printf STDERR <<EOF;
