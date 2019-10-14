@@ -264,9 +264,6 @@ EOF
 			env => {
 				VAULT_API_ADDR => 'http://127.0.0.1:8200',
 			},
-			ports => [
-				'8201:8200',
-			],
 			volumes => [
 				"$DATAROOT/$component/vault:/vault",
 				"$DATAROOT/$component/vault/file:/vault/file",
@@ -325,9 +322,6 @@ EOF
 			'--name'    => "$name-server",
 			'--restart' => 'always',
 			'--network' => 'public',
-			ports => [
-				'5000',
-			],
 			volumes => [
 				"$DATAROOT/$component/htpasswd:/etc/docker/registry/auth",
 				"$DATAROOT/$component/config.yml:/etc/docker/registry/config.yml",
