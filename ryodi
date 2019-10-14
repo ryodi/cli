@@ -421,6 +421,64 @@ EOF
 		exit 0;
 	}
 
+	if ($component eq 'blog') {
+		mkpath("$DATAROOT/$component/db/mysql");
+		mkpath("$DATAROOT/$component/ghost/content");
+
+		docker('network create blog >/dev/null 2>&1');
+
+		my $dbpass = vaultgen(password => 32, at => "secret/$component/mysql:password");
+
+		docker({
+			run => [qw[mysql:5.7]],
+			'--name'    => "$name-db",
+			'--user'    => runas(),
+			'--network' => 'blog',
+			env => {
+				MYSQL_ROOT_PASSWORD => $dbpass,
+			},
+			volumes => [
+				"$DATAROOT/$component/db/mysql:/var/lib/mysql",
+			],
+			labels => labels(
+				component => $component,
+				alias     => $name,
+				role      => 'ghost',
+				version   => version(),
+			),
+		});
+
+		docker({
+			run => [qw[ghost]],
+			'--name'    => "$name-ghost",
+			'--user'    => runas(),
+			'--network' => 'blog',
+			env => {
+				url => "https://blog.$DOMAIN",
+				database__client => 'mysql',
+				database__connection__host     => "$name-db",
+				database__connection__database => 'ghost',
+				database__connection__user     => "root",
+				database__connection__password => $dbpass,
+			},
+			volumes => [
+				"$DATAROOT/$component/ghost/content:/var/lib/ghost/content",
+			],
+			labels => labels(
+				component => $component,
+				alias     => $name,
+				role      => 'db',
+				version   => version(),
+
+				'traefik.frontend.rule'  => "Host:blog.$DOMAIN",
+				'traefik.docker.network' => "public",
+			),
+		});
+
+		docker('network connect public %s-ghost', $name);
+		exit 0;
+	}
+
 	if ($component eq 'registry') {
 		needenv(qw[S3_ACCESS_KEY
 		           S3_SECRET_KEY
