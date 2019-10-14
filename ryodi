@@ -140,10 +140,6 @@ if ($command eq 'up') {
 	my $name = $component;
 
 	if ($component eq 'control-plane') {
-		for (qw(router certwatch vault)) {
-			docker('stop "%s-%s" >/dev/null 2>&1', $name, $_);
-			docker('rm   "%s-%s" >/dev/null 2>&1', $name, $_);
-		}
 		docker('network create public >/dev/null 2>&1');
 
 		mkpath("$DATAROOT/$component/vault/file");
@@ -213,9 +209,7 @@ EOF
 		docker({
 			run => [qw[traefik -d --docker]],
 			'--user'    => runas('docker'),
-			'-d'        => undef,
 			'--name'    => "$name-router",
-			'--restart' => 'always',
 			'--network' => 'public',
 			ports => [
 				'80:8080',
@@ -238,9 +232,7 @@ EOF
 		docker({
 			run => [qw[ryodi/traefik-cert-dumper watch]],
 			'--user'    => runas(),
-			'-d'        => undef,
 			'--name'    => "$name-certwatch",
-			'--restart' => 'always',
 			volumes => [
 				"$DATAROOT/$component/acme:/acme",
 				"$DATAROOT/_certs:/dump",
@@ -256,9 +248,7 @@ EOF
 		docker({
 			run => [qw[ryodi/vault vault server -config /vault/config.json]],
 			'--user'    => runas(),
-			'-d'        => undef,
 			'--name'    => "$name-vault",
-			'--restart' => 'always',
 			'--network' => 'public',
 			'--cap-add' => 'IPC_LOCK',
 			env => {
@@ -289,10 +279,6 @@ EOF
 		           S3_BUCKET]);
 
 		resolvenv();
-		for (qw(server)) {
-			docker('stop "%s-%s" >/dev/null 2>&1', $name, $_);
-			docker('rm   "%s-%s" >/dev/null 2>&1', $name, $_);
-		}
 		docker('network create public >/dev/null 2>&1');
 
 		$ENV{S3_REGION} ||= 'us-east-1';
@@ -318,9 +304,7 @@ EOF
 		docker({
 			run => [qw[registry:2]],
 			'--user'    => runas(),
-			'-d'        => undef,
 			'--name'    => "$name-server",
-			'--restart' => 'always',
 			'--network' => 'public',
 			volumes => [
 				"$DATAROOT/$component/htpasswd:/etc/docker/registry/auth",
@@ -408,7 +392,8 @@ if ($command eq 'registry') {
 		}
 
 		docker({ run => ['ryodi/htpasswd', '-B', '/auth', $user],
-			-it => undef,
+			ephemeral => 'yes',
+			-it       => undef,
 			volumes => [
 				"$DATAROOT/$component/htpasswd:/auth",
 			],
@@ -510,6 +495,17 @@ sub docker {
 		# i.e. docker({ run => ['image', '--args'], %options });
 
 		my @opts = qw(run);
+		my $delete;
+
+		if ($_[0]{ephemeral}) {
+			$_[0]{'--rm'} = undef;
+
+		} else {
+			$_[0]{'-d'} = undef;
+			$_[0]{'--restart'} = 'always';
+			$delete = $_[0]{'--name'};
+		}
+
 		for my $arg (keys %{$_[0]}) {
 			next if $arg eq 'run';
 			if ($arg =~ m/^-/) {
@@ -540,6 +536,11 @@ sub docker {
 				push @opts, interleave1('--label' => $_[0]{$arg});
 				next;
 			}
+		}
+
+		if ($delete) {
+			docker('stop %s', $delete);
+			docker('rm   %s', $delete);
 		}
 
 		push @opts, @{$_[0]{run}};
