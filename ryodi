@@ -170,6 +170,9 @@ defaultEntryPoints = ["http", "https"]
 [entryPoints]
   [entryPoints.http]
     address = ":8080"
+    [entryPoints.http.redirect]
+      regex = "http://(.*)/(.*)"
+      replacement = "https://\$1/\$2"
 
   [entryPoints.https]
     address = ":8443"
