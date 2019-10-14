@@ -479,6 +479,54 @@ EOF
 		exit 0;
 	}
 
+	if ($component eq 'mail') {
+		needenv(qw[MAIL_DOMAIN]);
+
+		resolvenv();
+		docker({
+			run => [qw[ nginx ]],
+			'--name' => "$name-tls-anchor",
+			labels => labels(
+				component => $component,
+				role      => 'tls-anchor',
+				alias     => $name,
+				version   => version(),
+
+				'traefik.frontend.rule' => "Host:smtp.$ENV{MAIL_DOMAIN},imap.$ENV{MAIL_DOMAIN},pop.$ENV{MAIL_DOMAIN},mail.$ENV{MAIL_DOMAIN}",
+			),
+		});
+
+		for (;;) {
+			last if -f "$DATAROOT/_certs/smtp.$ENV{MAIL_DOMAIN}/cert.pem";
+			sleep 1;
+		}
+		docker({
+			run => [qw[ ryodi/mail ]],
+			'--name' => "$name-server",
+			ports => [
+				'25:25', '587:587', # SMTP
+				'993:993',          # IMAPS
+				'995:995',          # POP3S
+			],
+			env => {
+				PRIMARY_DOMAIN => $ENV{MAIL_DOMAIN},
+			},
+			volumes => [
+				"$DATAROOT/$component/mail:/mail",
+				"$DATAROOT/_certs/smtp.$ENV{MAIL_DOMAIN}/cert.pem:/mail/tls/$ENV{MAIL_DOMAIN}.cer",
+				"$DATAROOT/_certs/smtp.$ENV{MAIL_DOMAIN}/key.pem:/mail/tls/$ENV{MAIL_DOMAIN}.key",
+			],
+			labels => labels(
+				component => $component,
+				#role      => 'server',
+				alias     => $name,
+				version   => version(),
+			),
+		});
+
+		exit 0;
+	}
+
 	if ($component eq 'registry') {
 		needenv(qw[S3_ACCESS_KEY
 		           S3_SECRET_KEY
