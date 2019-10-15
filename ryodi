@@ -705,6 +705,26 @@ if ($command eq 'vault') {
 	});
 }
 
+if ($command eq 'mail') {
+	$command = shift @ARGV || 'help';
+	my $component = 'mail';
+
+	if ($command eq 'help' || $command eq '-h' || $command eq '-?' || $command eq '--help') {
+		banner();
+		# FIXME: write help
+		exit 0;
+	}
+
+	exit docker({ run => [qw[ryodi/mail vmail], $command, @ARGV],
+		ephemeral => 'yes',
+		'--user'  => runas(),
+		-it       => undef,
+		volumes => [
+			"$DATAROOT/$component/mail:/mail",
+		],
+	});
+}
+
 printf STDERR <<EOF;
 ryodi: command '$command' not recognized.
 
